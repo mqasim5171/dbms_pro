@@ -71,6 +71,7 @@ api_router = APIRouter(prefix="/api")
 
 allowed_origins = [
     "http://localhost:3000",
+     "https://fancy-gelato-c39f14.netlify.app",
 ]
 
 app.add_middleware(
