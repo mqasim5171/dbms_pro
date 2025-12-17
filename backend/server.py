@@ -13,7 +13,7 @@ import os
 import logging
 import uuid
 from pathlib import Path
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
 
 # ---------------- ENV & DB SETUP ----------------
@@ -47,9 +47,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -71,7 +69,7 @@ api_router = APIRouter(prefix="/api")
 
 allowed_origins = [
     "http://localhost:3000",
-     "https://fancy-gelato-c39f14.netlify.app",
+    "https://fancy-gelato-c39f14.netlify.app",
 ]
 
 app.add_middleware(
@@ -81,6 +79,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ✅ Health route (Render etc.)
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "Real Estate Listing & Booking API"}
+
 
 # ---------------- ROLES & DEPENDENCIES ----------------
 
@@ -98,9 +102,7 @@ async def get_current_user(
     payload = decode_access_token(token)
     user_id = payload.get("user_id")
     if not user_id:
-        raise HTTPException(
-            status_code=401, detail="Invalid authentication credentials"
-        )
+        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
@@ -293,7 +295,6 @@ class Favorite(BaseModel):
 
 @api_router.post("/auth/register")
 async def register(user_data: UserRegister):
-    # Check existing email
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -373,14 +374,9 @@ async def list_cities():
 
 
 @api_router.post("/cities", response_model=City)
-async def create_city(
-    city_data: CityCreate, current_user: dict = Depends(get_admin_user)
-):
+async def create_city(city_data: CityCreate, current_user: dict = Depends(get_admin_user)):
     city_id = str(uuid.uuid4())
-    doc = {
-        "id": city_id,
-        "city_name": city_data.city_name,
-    }
+    doc = {"id": city_id, "city_name": city_data.city_name}
     await db.cities.insert_one(doc)
     return doc
 
@@ -396,10 +392,7 @@ async def create_property_type(
     type_data: PropertyTypeCreate, current_user: dict = Depends(get_admin_user)
 ):
     type_id = str(uuid.uuid4())
-    doc = {
-        "id": type_id,
-        "type_name": type_data.type_name,
-    }
+    doc = {"id": type_id, "type_name": type_data.type_name}
     await db.property_types.insert_one(doc)
     return doc
 
@@ -449,9 +442,7 @@ async def get_property(property_id: str):
 
 
 @api_router.post("/properties", response_model=Property)
-async def create_property(
-    property_data: PropertyCreate, current_user: dict = Depends(get_current_user)
-):
+async def create_property(property_data: PropertyCreate, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.owner.value, UserRole.admin.value]:
         raise HTTPException(
             status_code=403,
@@ -480,9 +471,7 @@ async def update_property(
         raise HTTPException(status_code=404, detail="Property not found")
 
     if existing["owner_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
-        raise HTTPException(
-            status_code=403, detail="Not authorized to update this property"
-        )
+        raise HTTPException(status_code=403, detail="Not authorized to update this property")
 
     updated_doc = {
         **property_data.model_dump(),
@@ -496,17 +485,13 @@ async def update_property(
 
 
 @api_router.delete("/properties/{property_id}")
-async def delete_property(
-    property_id: str, current_user: dict = Depends(get_current_user)
-):
+async def delete_property(property_id: str, current_user: dict = Depends(get_current_user)):
     existing = await db.properties.find_one({"id": property_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Property not found")
 
     if existing["owner_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
-        raise HTTPException(
-            status_code=403, detail="Not authorized to delete this property"
-        )
+        raise HTTPException(status_code=403, detail="Not authorized to delete this property")
 
     await db.properties.delete_one({"id": property_id})
     return {"message": "Property deleted successfully"}
@@ -515,9 +500,7 @@ async def delete_property(
 @api_router.get("/owner/my-properties", response_model=List[Property])
 async def get_my_properties(current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.owner.value, UserRole.admin.value]:
-        raise HTTPException(
-            status_code=403, detail="Only owners or admin can view this"
-        )
+        raise HTTPException(status_code=403, detail="Only owners or admin can view this")
 
     query = {}
     if current_user["role"] == UserRole.owner.value:
@@ -531,77 +514,48 @@ async def get_my_properties(current_user: dict = Depends(get_current_user)):
 
 @api_router.get("/bookings", response_model=List[Booking])
 async def get_bookings(current_user: dict = Depends(get_current_user)):
-    # buyer → their bookings
-    # owner → bookings for their properties
-    # admin → all bookings
     if current_user["role"] == UserRole.admin.value:
         docs = await db.bookings.find({}, {"_id": 0}).to_list(1000)
         return docs
 
     if current_user["role"] == UserRole.owner.value:
-        # find properties owned by this owner
-        owner_props = await db.properties.find(
-            {"owner_id": current_user["id"]}, {"id": 1}
-        ).to_list(1000)
+        owner_props = await db.properties.find({"owner_id": current_user["id"]}, {"id": 1}).to_list(1000)
         prop_ids = [p["id"] for p in owner_props]
-        docs = await db.bookings.find(
-            {"property_id": {"$in": prop_ids}}, {"_id": 0}
-        ).to_list(1000)
+        docs = await db.bookings.find({"property_id": {"$in": prop_ids}}, {"_id": 0}).to_list(1000)
         return docs
 
-    # buyer
-    docs = await db.bookings.find(
-        {"user_id": current_user["id"]}, {"_id": 0}
-    ).to_list(1000)
+    docs = await db.bookings.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(1000)
     return docs
 
 
 @api_router.get("/bookings/{booking_id}", response_model=Booking)
-async def get_booking(
-    booking_id: str, current_user: dict = Depends(get_current_user)
-):
+async def get_booking(booking_id: str, current_user: dict = Depends(get_current_user)):
     booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
 
-    if (
-        booking["user_id"] != current_user["id"]
-        and current_user["role"] != UserRole.admin.value
-    ):
-        # Owner view: check if property belongs to owner
+    if booking["user_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
         prop = await db.properties.find_one({"id": booking["property_id"]})
         if not prop or prop["owner_id"] != current_user["id"]:
-            raise HTTPException(
-                status_code=403, detail="Not authorized to view this booking"
-            )
+            raise HTTPException(status_code=403, detail="Not authorized to view this booking")
 
     return booking
 
 
 @api_router.post("/bookings", response_model=Booking)
-async def create_booking(
-    booking_data: BookingCreate, current_user: dict = Depends(get_current_user)
-):
+async def create_booking(booking_data: BookingCreate, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.buyer.value, UserRole.admin.value]:
-        raise HTTPException(
-            status_code=403,
-            detail="Only buyers or admin can create bookings",
-        )
+        raise HTTPException(status_code=403, detail="Only buyers or admin can create bookings")
 
     prop = await db.properties.find_one({"id": booking_data.property_id})
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
     if prop["status"] != "available":
-        raise HTTPException(
-            status_code=400, detail="Property is not available for booking"
-        )
+        raise HTTPException(status_code=400, detail="Property is not available for booking")
 
-    # Prevent booking own property (if buyer is also owner)
     if prop["owner_id"] == current_user["id"]:
-        raise HTTPException(
-            status_code=400, detail="You cannot book your own property"
-        )
+        raise HTTPException(status_code=400, detail="You cannot book your own property")
 
     booking_id = str(uuid.uuid4())
     total_amount = booking_data.total_amount or float(prop["price"])
@@ -625,12 +579,16 @@ async def create_booking(
     return doc
 
 
+# ✅ UPDATED: status validation + confirm locks property + cancels others
 @api_router.put("/bookings/{booking_id}/status", response_model=Booking)
 async def update_booking_status(
     booking_id: str,
     status: str,
     current_user: dict = Depends(get_current_user),
 ):
+    if status not in ["pending", "confirmed", "cancelled"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+
     booking = await db.bookings.find_one({"id": booking_id})
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
@@ -639,7 +597,6 @@ async def update_booking_status(
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    # Only property owner or admin can change status
     if (
         current_user["role"] != UserRole.admin.value
         and prop["owner_id"] != current_user["id"]
@@ -649,35 +606,35 @@ async def update_booking_status(
             detail="Only property owner or admin can update booking status",
         )
 
-    await db.bookings.update_one(
-        {"id": booking_id}, {"$set": {"status": status}}
-    )
+    if booking.get("status") == "confirmed":
+        raise HTTPException(status_code=400, detail="Booking already confirmed")
 
-    # Optionally mark property as booked if status confirmed
     if status == "confirmed":
-        await db.properties.update_one(
-            {"id": booking["property_id"]}, {"$set": {"status": "booked"}}
+        if prop.get("status") != "available":
+            raise HTTPException(status_code=400, detail="Property is no longer available")
+
+        await db.bookings.update_one({"id": booking_id}, {"$set": {"status": "confirmed"}})
+        await db.properties.update_one({"id": prop["id"]}, {"$set": {"status": "booked"}})
+
+        await db.bookings.update_many(
+            {"property_id": prop["id"], "id": {"$ne": booking_id}, "status": "pending"},
+            {"$set": {"status": "cancelled"}},
         )
+    else:
+        await db.bookings.update_one({"id": booking_id}, {"$set": {"status": status}})
 
     updated = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
     return updated
 
 
 @api_router.delete("/bookings/{booking_id}")
-async def delete_booking(
-    booking_id: str, current_user: dict = Depends(get_current_user)
-):
+async def delete_booking(booking_id: str, current_user: dict = Depends(get_current_user)):
     booking = await db.bookings.find_one({"id": booking_id})
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
 
-    if (
-        booking["user_id"] != current_user["id"]
-        and current_user["role"] != UserRole.admin.value
-    ):
-        raise HTTPException(
-            status_code=403, detail="Not authorized to delete this booking"
-        )
+    if booking["user_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this booking")
 
     await db.bookings.delete_one({"id": booking_id})
     return {"message": "Booking deleted successfully"}
@@ -691,35 +648,21 @@ async def list_payments(current_user: dict = Depends(get_current_user)):
         docs = await db.payments.find({}, {"_id": 0}).to_list(1000)
         return docs
 
-    # buyer → payments for their bookings
-    bookings = await db.bookings.find(
-        {"user_id": current_user["id"]}, {"id": 1}
-    ).to_list(1000)
+    bookings = await db.bookings.find({"user_id": current_user["id"]}, {"id": 1}).to_list(1000)
     booking_ids = [b["id"] for b in bookings]
 
-    docs = await db.payments.find(
-        {"booking_id": {"$in": booking_ids}}, {"_id": 0}
-    ).to_list(1000)
+    docs = await db.payments.find({"booking_id": {"$in": booking_ids}}, {"_id": 0}).to_list(1000)
     return docs
 
 
 @api_router.post("/payments", response_model=Payment)
-async def create_payment(
-    payment_data: PaymentCreate, current_user: dict = Depends(get_current_user)
-):
+async def create_payment(payment_data: PaymentCreate, current_user: dict = Depends(get_current_user)):
     booking = await db.bookings.find_one({"id": payment_data.booking_id})
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
 
-    # Only booking owner (buyer) or admin can create payment
-    if (
-        booking["user_id"] != current_user["id"]
-        and current_user["role"] != UserRole.admin.value
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Not authorized to create payment for this booking",
-        )
+    if booking["user_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
+        raise HTTPException(status_code=403, detail="Not authorized to create payment for this booking")
 
     pay_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -729,16 +672,12 @@ async def create_payment(
         "amount": payment_data.amount,
         "method": payment_data.method.value,
         "payment_date": now_iso,
-        "status": "paid",  # simple: assume success
+        "status": "paid",
         "created_at": now_iso,
     }
     await db.payments.insert_one(doc)
 
-    # Mark booking as confirmed if payment successful
-    await db.bookings.update_one(
-        {"id": payment_data.booking_id},
-        {"$set": {"status": "confirmed"}},
-    )
+    await db.bookings.update_one({"id": payment_data.booking_id}, {"$set": {"status": "confirmed"}})
 
     return doc
 
@@ -747,18 +686,12 @@ async def create_payment(
 
 @api_router.get("/properties/{property_id}/reviews", response_model=List[Review])
 async def list_reviews_for_property(property_id: str):
-    docs = await db.reviews.find(
-        {"property_id": property_id}, {"_id": 0}
-    ).to_list(1000)
+    docs = await db.reviews.find({"property_id": property_id}, {"_id": 0}).to_list(1000)
     return docs
 
 
 @api_router.post("/reviews", response_model=Review)
-async def create_review(
-    review_data: ReviewCreate, current_user: dict = Depends(get_current_user)
-):
-    # (Optional extra check: only allow review if user has booking)
-    # For now, just require authentication.
+async def create_review(review_data: ReviewCreate, current_user: dict = Depends(get_current_user)):
     review_id = str(uuid.uuid4())
     doc = {
         "id": review_id,
@@ -777,23 +710,17 @@ async def create_review(
 
 @api_router.get("/favorites", response_model=List[Favorite])
 async def list_favorites(current_user: dict = Depends(get_current_user)):
-    docs = await db.favorites.find(
-        {"user_id": current_user["id"]}, {"_id": 0}
-    ).to_list(1000)
+    docs = await db.favorites.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(1000)
     return docs
 
 
 @api_router.post("/favorites", response_model=Favorite)
-async def add_favorite(
-    fav_data: FavoriteCreate, current_user: dict = Depends(get_current_user)
-):
+async def add_favorite(fav_data: FavoriteCreate, current_user: dict = Depends(get_current_user)):
     existing = await db.favorites.find_one(
         {"user_id": current_user["id"], "property_id": fav_data.property_id}
     )
     if existing:
-        raise HTTPException(
-            status_code=400, detail="Property already in favorites"
-        )
+        raise HTTPException(status_code=400, detail="Property already in favorites")
 
     fav_id = str(uuid.uuid4())
     doc = {
@@ -807,17 +734,13 @@ async def add_favorite(
 
 
 @api_router.delete("/favorites/{favorite_id}")
-async def remove_favorite(
-    favorite_id: str, current_user: dict = Depends(get_current_user)
-):
+async def remove_favorite(favorite_id: str, current_user: dict = Depends(get_current_user)):
     fav = await db.favorites.find_one({"id": favorite_id})
     if not fav:
         raise HTTPException(status_code=404, detail="Favorite not found")
 
     if fav["user_id"] != current_user["id"]:
-        raise HTTPException(
-            status_code=403, detail="Not authorized to remove this favorite"
-        )
+        raise HTTPException(status_code=403, detail="Not authorized to remove this favorite")
 
     await db.favorites.delete_one({"id": favorite_id})
     return {"message": "Favorite removed successfully"}
@@ -827,9 +750,7 @@ async def remove_favorite(
 
 @api_router.get("/admin/users", response_model=List[User])
 async def get_all_users(current_user: dict = Depends(get_admin_user)):
-    docs = await db.users.find(
-        {}, {"_id": 0, "password": 0}
-    ).to_list(1000)
+    docs = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
     return docs
 
 
@@ -856,14 +777,6 @@ async def get_stats(current_user: dict = Depends(get_admin_user)):
 
 @api_router.post("/admin/seed")
 async def seed_data():
-    """
-    Seed:
-    - admin user
-    - one owner
-    - some cities, property types
-    - sample properties
-    """
-    # Admin user
     admin = await db.users.find_one({"email": "admin@realestate.com"})
     if not admin:
         admin_id = str(uuid.uuid4())
@@ -880,7 +793,6 @@ async def seed_data():
     else:
         admin_id = admin["id"]
 
-    # Owner (dealer)
     owner = await db.users.find_one({"email": "owner@realestate.com"})
     if not owner:
         owner_id = str(uuid.uuid4())
@@ -897,7 +809,6 @@ async def seed_data():
     else:
         owner_id = owner["id"]
 
-    # Cities
     existing_cities = await db.cities.count_documents({})
     if existing_cities == 0:
         city_docs = [
@@ -912,7 +823,6 @@ async def seed_data():
     else:
         city_docs = await db.cities.find({}, {"_id": 0}).to_list(100)
 
-    # Property Types
     existing_types = await db.property_types.count_documents({})
     if existing_types == 0:
         type_docs = [
@@ -927,21 +837,18 @@ async def seed_data():
     else:
         type_docs = await db.property_types.find({}, {"_id": 0}).to_list(100)
 
-    # Helper maps
     def find_city(name: str) -> Optional[str]:
         for c in city_docs:
             if c["city_name"] == name:
                 return c["id"]
         return None
 
-       
     def find_type(name: str) -> Optional[str]:
         for t in type_docs:
             if t["type_name"] == name:
                 return t["id"]
         return None
 
-    # Properties
     existing_props = await db.properties.count_documents({})
     if existing_props == 0:
         sample_properties = [
@@ -1000,7 +907,6 @@ async def seed_data():
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
         ]
-
         await db.properties.insert_many(sample_properties)
 
     return {"message": "Database seeded successfully"}
@@ -1013,22 +919,23 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @api_router.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(request: Request, file: UploadFile = File(...)):
     try:
         file_ext = file.filename.split(".")[-1]
         file_name = f"{uuid.uuid4()}.{file_ext}"
         file_path = UPLOAD_DIR / file_name
 
-        # Save file
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
-        image_url = f"http://localhost:8000/uploads/{file_name}"
+        base_url = str(request.base_url).rstrip("/")
+        image_url = f"{base_url}/uploads/{file_name}"
 
         return {"url": image_url}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed:{e}")
+
 
 # ---------------- REGISTER ROUTER ----------------
 app.include_router(api_router)

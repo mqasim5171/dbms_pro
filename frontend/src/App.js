@@ -55,7 +55,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// ✅ SAFE API BASE (prevents //api if env ends with /)
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
 const API = `${BACKEND_URL}/api`;
 
 // ---------------- AUTH CONTEXT ----------------
@@ -142,11 +143,14 @@ function Navigation() {
           <a href="/" data-testid="nav-home">
             Home
           </a>
-          <a href="/properties" data-testid="nav-properties">
-            Properties
-          </a>
 
-          {/* ✅ Favorites link (logged-in only) */}
+          {/* ✅ Optional: hide Properties link for owner */}
+          {user?.role !== "owner" && (
+            <a href="/properties" data-testid="nav-properties">
+              Properties
+            </a>
+          )}
+
           {user && (
             <a href="/favorites" data-testid="nav-favorites">
               Favorites
@@ -195,10 +199,7 @@ function Navigation() {
               >
                 Login
               </Button>
-              <Button
-                onClick={() => navigate("/register")}
-                data-testid="register-btn"
-              >
+              <Button onClick={() => navigate("/register")} data-testid="register-btn">
                 Sign Up
               </Button>
             </div>
@@ -219,11 +220,13 @@ function Navigation() {
           <a href="/" onClick={() => setMobileMenuOpen(false)}>
             Home
           </a>
-          <a href="/properties" onClick={() => setMobileMenuOpen(false)}>
-            Properties
-          </a>
 
-          {/* ✅ Favorites link (logged-in only) */}
+          {user?.role !== "owner" && (
+            <a href="/properties" onClick={() => setMobileMenuOpen(false)}>
+              Properties
+            </a>
+          )}
+
           {user && (
             <a href="/favorites" onClick={() => setMobileMenuOpen(false)}>
               Favorites
@@ -316,9 +319,7 @@ function HomePage() {
       <section className="hero-section" data-testid="hero-section">
         <div className="hero-content">
           <h1 className="hero-title">Find Your Dream Home</h1>
-          <p className="hero-subtitle">
-            Discover exceptional properties in prime locations
-          </p>
+          <p className="hero-subtitle">Discover exceptional properties in prime locations</p>
 
           <div className="search-bar" data-testid="search-bar">
             <Search className="search-icon" />
@@ -378,10 +379,7 @@ function HomePage() {
                   <span className="property-price" data-testid="property-price">
                     ${property.price.toLocaleString()}
                   </span>
-                  <Button
-                    onClick={() => navigate(`/property/${property.id}`)}
-                    data-testid="view-details-btn"
-                  >
+                  <Button onClick={() => navigate(`/property/${property.id}`)}>
                     View Details
                   </Button>
                 </div>
@@ -394,7 +392,7 @@ function HomePage() {
   );
 }
 
-// ---------------- FAVORITES PAGE (✅ NEW) ----------------
+// ---------------- FAVORITES PAGE ----------------
 
 function FavoritesPage() {
   const { token } = useAuth();
@@ -423,9 +421,7 @@ function FavoritesPage() {
       );
 
       const propertyResponses = await Promise.all(propertyPromises);
-      const props = propertyResponses
-        .filter((r) => r?.data)
-        .map((r) => r.data);
+      const props = propertyResponses.filter((r) => r?.data).map((r) => r.data);
 
       setProperties(props);
     } catch (err) {
@@ -506,16 +502,10 @@ function FavoritesPage() {
                     </span>
 
                     <div className="flex gap-2">
-                      <Button
-                        onClick={() => navigate(`/property/${property.id}`)}
-                      >
+                      <Button onClick={() => navigate(`/property/${property.id}`)}>
                         View
                       </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => handleRemove(property.id)}
-                        data-testid="remove-favorite-btn"
-                      >
+                      <Button variant="outline" onClick={() => handleRemove(property.id)}>
                         Remove
                       </Button>
                     </div>
@@ -530,7 +520,7 @@ function FavoritesPage() {
   );
 }
 
-// ---------------- PROPERTY DETAIL PAGE (with Favorites + Reviews) ----------------
+// ---------------- PROPERTY DETAIL PAGE ----------------
 
 function PropertyPage() {
   const { id } = useParams();
@@ -546,11 +536,9 @@ function PropertyPage() {
   });
   const [showBookingDialog, setShowBookingDialog] = useState(false);
 
-  // Favorites
   const [isFavorite, setIsFavorite] = useState(false);
   const [favoriteId, setFavoriteId] = useState(null);
 
-  // Reviews
   const [reviews, setReviews] = useState([]);
   const [avgRating, setAvgRating] = useState(null);
   const [showReviewDialog, setShowReviewDialog] = useState(false);
@@ -568,11 +556,9 @@ function PropertyPage() {
         toast.error("Failed to load property");
       }
     };
-
     fetchProperty();
   }, [id]);
 
-  // Fetch reviews for this property
   useEffect(() => {
     const fetchReviews = async () => {
       try {
@@ -589,11 +575,9 @@ function PropertyPage() {
         console.error("Failed to load reviews", err);
       }
     };
-
     fetchReviews();
   }, [id]);
 
-  // Fetch favorites for current user to see if this property is saved
   useEffect(() => {
     if (!user || !token) {
       setIsFavorite(false);
@@ -619,7 +603,6 @@ function PropertyPage() {
         console.error("Failed to load favorites", err);
       }
     };
-
     fetchFavorites();
   }, [id, user, token]);
 
@@ -697,10 +680,9 @@ function PropertyPage() {
           rating: reviewData.rating,
           comment: reviewData.comment,
         },
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+        { headers: { Authorization: `Bearer ${token}` } }
       );
+
       toast.success("Review submitted");
       setShowReviewDialog(false);
       setReviewData({ rating: 5, comment: "" });
@@ -708,6 +690,7 @@ function PropertyPage() {
       const res = await axios.get(`${API}/properties/${id}/reviews`);
       const list = res.data || [];
       setReviews(list);
+
       if (list.length > 0) {
         const sum = list.reduce((acc, r) => acc + (r.rating || 0), 0);
         setAvgRating(sum / list.length);
@@ -750,10 +733,7 @@ function PropertyPage() {
               )}
             </div>
 
-            <div
-              className="property-detail-price"
-              data-testid="property-detail-price"
-            >
+            <div className="property-detail-price" data-testid="property-detail-price">
               ${property.price.toLocaleString()}
             </div>
           </div>
@@ -798,7 +778,6 @@ function PropertyPage() {
               size="lg"
               className="booking-btn"
               onClick={() => setShowBookingDialog(true)}
-              data-testid="book-now-btn"
             >
               Book Now
             </Button>
@@ -808,12 +787,8 @@ function PropertyPage() {
               size="lg"
               className="favorite-btn ml-3"
               onClick={handleToggleFavorite}
-              data-testid="favorite-btn"
             >
-              <Heart
-                className="w-5 h-5 mr-2"
-                fill={isFavorite ? "currentColor" : "none"}
-              />
+              <Heart className="w-5 h-5 mr-2" fill={isFavorite ? "currentColor" : "none"} />
               {isFavorite ? "Saved" : "Save"}
             </Button>
           </div>
@@ -857,7 +832,6 @@ function PropertyPage() {
 
             <Button
               className="mt-4"
-              data-testid="write-review-btn"
               onClick={() => {
                 if (!user) {
                   toast.error("Please login to write a review");
@@ -875,12 +849,10 @@ function PropertyPage() {
 
       {/* Booking Dialog */}
       <Dialog open={showBookingDialog} onOpenChange={setShowBookingDialog}>
-        <DialogContent data-testid="booking-dialog">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Book This Property</DialogTitle>
-            <DialogDescription>
-              Fill in the details to request a booking
-            </DialogDescription>
+            <DialogDescription>Fill in the details to request a booking</DialogDescription>
           </DialogHeader>
 
           <form onSubmit={handleBooking} className="booking-form">
@@ -891,10 +863,7 @@ function PropertyPage() {
                 type="date"
                 required
                 value={bookingData.check_in}
-                onChange={(e) =>
-                  setBookingData({ ...bookingData, check_in: e.target.value })
-                }
-                data-testid="check-in-input"
+                onChange={(e) => setBookingData({ ...bookingData, check_in: e.target.value })}
               />
             </div>
 
@@ -905,10 +874,7 @@ function PropertyPage() {
                 type="date"
                 required
                 value={bookingData.check_out}
-                onChange={(e) =>
-                  setBookingData({ ...bookingData, check_out: e.target.value })
-                }
-                data-testid="check-out-input"
+                onChange={(e) => setBookingData({ ...bookingData, check_out: e.target.value })}
               />
             </div>
 
@@ -926,7 +892,6 @@ function PropertyPage() {
                     guests: parseInt(e.target.value) || 1,
                   })
                 }
-                data-testid="guests-input"
               />
             </div>
 
@@ -936,14 +901,11 @@ function PropertyPage() {
                 id="message"
                 placeholder="Any special requests or questions..."
                 value={bookingData.message}
-                onChange={(e) =>
-                  setBookingData({ ...bookingData, message: e.target.value })
-                }
-                data-testid="message-input"
+                onChange={(e) => setBookingData({ ...bookingData, message: e.target.value })}
               />
             </div>
 
-            <Button type="submit" className="w-full" data-testid="submit-booking-btn">
+            <Button type="submit" className="w-full">
               Submit Booking
             </Button>
           </form>
@@ -952,12 +914,10 @@ function PropertyPage() {
 
       {/* Review Dialog */}
       <Dialog open={showReviewDialog} onOpenChange={setShowReviewDialog}>
-        <DialogContent data-testid="review-dialog">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Write a Review</DialogTitle>
-            <DialogDescription>
-              Share your experience about this property
-            </DialogDescription>
+            <DialogDescription>Share your experience about this property</DialogDescription>
           </DialogHeader>
 
           <form onSubmit={handleSubmitReview} className="booking-form">
@@ -965,9 +925,7 @@ function PropertyPage() {
               <Label htmlFor="rating">Rating (1–5)</Label>
               <Select
                 value={String(reviewData.rating)}
-                onValueChange={(val) =>
-                  setReviewData({ ...reviewData, rating: parseInt(val) })
-                }
+                onValueChange={(val) => setReviewData({ ...reviewData, rating: parseInt(val) })}
               >
                 <SelectTrigger id="rating">
                   <SelectValue />
@@ -988,13 +946,11 @@ function PropertyPage() {
                 id="review-comment"
                 placeholder="Write your feedback..."
                 value={reviewData.comment}
-                onChange={(e) =>
-                  setReviewData({ ...reviewData, comment: e.target.value })
-                }
+                onChange={(e) => setReviewData({ ...reviewData, comment: e.target.value })}
               />
             </div>
 
-            <Button type="submit" className="w-full" data-testid="submit-review-btn">
+            <Button type="submit" className="w-full">
               Submit Review
             </Button>
           </form>
@@ -1028,8 +984,8 @@ function PropertiesPage() {
   const filteredProperties =
     filter === "all"
       ? properties
-      : properties.filter(
-          (p) => (p.property_type || "").toLowerCase() === filter.toLowerCase()
+      : properties.filter((p) =>
+          (p.property_type || "").toLowerCase().includes(filter.toLowerCase())
         );
 
   return (
@@ -1040,7 +996,7 @@ function PropertiesPage() {
         <div className="page-header">
           <h1>All Properties</h1>
           <Select value={filter} onValueChange={setFilter}>
-            <SelectTrigger className="w-48" data-testid="property-filter">
+            <SelectTrigger className="w-48">
               <SelectValue placeholder="Filter by type" />
             </SelectTrigger>
             <SelectContent>
@@ -1058,10 +1014,7 @@ function PropertiesPage() {
         <div className="properties-grid">
           {filteredProperties.map((property) => (
             <Card key={property.id} className="property-card">
-              <div
-                className="property-image"
-                onClick={() => navigate(`/property/${property.id}`)}
-              >
+              <div className="property-image" onClick={() => navigate(`/property/${property.id}`)}>
                 <img src={property.image_url} alt={property.title} />
                 <div className="property-badge">{property.status}</div>
               </div>
@@ -1154,28 +1107,21 @@ function BookingsPage() {
         <h1>My Bookings</h1>
 
         {bookings.length === 0 ? (
-          <Card className="empty-state" data-testid="empty-bookings">
+          <Card className="empty-state">
             <CardContent>
               <Calendar className="w-16 h-16 mx-auto mb-4 opacity-50" />
               <p>You haven't made any bookings yet</p>
-              <Button
-                onClick={() => (window.location.href = "/properties")}
-                className="mt-4"
-              >
+              <Button onClick={() => (window.location.href = "/properties")} className="mt-4">
                 Browse Properties
               </Button>
             </CardContent>
           </Card>
         ) : (
-          <div className="bookings-list" data-testid="bookings-list">
+          <div className="bookings-list">
             {bookings.map((booking) => {
               const property = properties[booking.property_id];
               return (
-                <Card
-                  key={booking.id}
-                  className="booking-card"
-                  data-testid={`booking-card-${booking.id}`}
-                >
+                <Card key={booking.id} className="booking-card">
                   <CardContent className="booking-content">
                     {property && (
                       <div className="booking-image">
@@ -1185,21 +1131,12 @@ function BookingsPage() {
                     <div className="booking-details">
                       <h3>{property?.title || "Property"}</h3>
                       <div className="booking-info-grid">
-                        <div>
-                          <strong>Check-in:</strong> {booking.check_in}
-                        </div>
-                        <div>
-                          <strong>Check-out:</strong> {booking.check_out}
-                        </div>
-                        <div>
-                          <strong>Guests:</strong> {booking.guests}
-                        </div>
+                        <div><strong>Check-in:</strong> {booking.check_in}</div>
+                        <div><strong>Check-out:</strong> {booking.check_out}</div>
+                        <div><strong>Guests:</strong> {booking.guests}</div>
                         <div>
                           <strong>Status:</strong>
-                          <span
-                            className={`status-badge status-${booking.status}`}
-                            data-testid="booking-status"
-                          >
+                          <span className={`status-badge status-${booking.status}`}>
                             {booking.status}
                           </span>
                         </div>
@@ -1214,7 +1151,6 @@ function BookingsPage() {
                       <Button
                         variant="destructive"
                         onClick={() => handleCancelBooking(booking.id)}
-                        data-testid="cancel-booking-btn"
                       >
                         Cancel
                       </Button>
@@ -1230,7 +1166,7 @@ function BookingsPage() {
   );
 }
 
-// ---------------- OWNER DASHBOARD ----------------
+// ---------------- OWNER DASHBOARD (UPDATED FULL) ----------------
 
 function OwnerDashboardPage() {
   const { user, token } = useAuth();
@@ -1238,6 +1174,10 @@ function OwnerDashboardPage() {
 
   const [properties, setProperties] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  const [bookingRequests, setBookingRequests] = useState([]);
+  const [bookingProps, setBookingProps] = useState({});
+
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     title: "",
@@ -1254,25 +1194,67 @@ function OwnerDashboardPage() {
 
   useEffect(() => {
     if (!user) return;
+
     if (user.role !== "owner" && user.role !== "admin") {
       toast.error("Only owners can access the Owner Dashboard");
       navigate("/");
-    } else {
-      fetchMyProperties();
+      return;
     }
+
+    fetchMyProperties();
+    fetchOwnerBookings();
     // eslint-disable-next-line
   }, [user]);
 
   const fetchMyProperties = async () => {
+    setLoading(true);
     try {
       const res = await axios.get(`${API}/owner/my-properties`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setProperties(res.data);
+      setProperties(res.data || []);
     } catch (err) {
       toast.error("Failed to load your properties");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchOwnerBookings = async () => {
+    try {
+      const res = await axios.get(`${API}/bookings`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const list = res.data || [];
+      setBookingRequests(list);
+
+      const propertyPromises = list.map((b) =>
+        axios.get(`${API}/properties/${b.property_id}`).catch(() => null)
+      );
+      const propertyResponses = await Promise.all(propertyPromises);
+
+      const map = {};
+      propertyResponses.forEach((r) => {
+        if (r?.data) map[r.data.id] = r.data;
+      });
+      setBookingProps(map);
+    } catch (err) {
+      toast.error("Failed to load booking requests");
+    }
+  };
+
+  const updateBookingStatus = async (bookingId, newStatus) => {
+    try {
+      await axios.put(
+        `${API}/bookings/${bookingId}/status?status=${newStatus}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success(newStatus === "confirmed" ? "Booking accepted" : "Booking declined");
+      await fetchOwnerBookings();
+      await fetchMyProperties();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to update booking status");
     }
   };
 
@@ -1328,11 +1310,12 @@ function OwnerDashboardPage() {
 
       <div className="owner-page">
         <h1>Owner Dashboard</h1>
-        <p className="page-subtitle">Manage your listings and add new properties.</p>
+        <p className="page-subtitle">Manage your listings and booking requests.</p>
 
         <Tabs defaultValue="my-properties">
           <TabsList className="admin-tabs">
             <TabsTrigger value="my-properties">My Properties</TabsTrigger>
+            <TabsTrigger value="booking-requests">Booking Requests</TabsTrigger>
             <TabsTrigger value="add-property" data-owner-add-tab>
               Add New Property
             </TabsTrigger>
@@ -1371,20 +1354,12 @@ function OwnerDashboardPage() {
                         <span>{property.location}</span>
                       </div>
                       <div className="property-features">
-                        <span>
-                          <Bed className="w-4 h-4" /> {property.bedrooms}
-                        </span>
-                        <span>
-                          <Bath className="w-4 h-4" /> {property.bathrooms}
-                        </span>
-                        <span>
-                          <Maximize className="w-4 h-4" /> {property.area} sq ft
-                        </span>
+                        <span><Bed className="w-4 h-4" /> {property.bedrooms}</span>
+                        <span><Bath className="w-4 h-4" /> {property.bathrooms}</span>
+                        <span><Maximize className="w-4 h-4" /> {property.area} sq ft</span>
                       </div>
                       <div className="property-footer">
-                        <span className="property-price">
-                          ${property.price.toLocaleString()}
-                        </span>
+                        <span className="property-price">${property.price.toLocaleString()}</span>
                       </div>
                     </CardContent>
                   </Card>
@@ -1393,13 +1368,71 @@ function OwnerDashboardPage() {
             )}
           </TabsContent>
 
+          <TabsContent value="booking-requests">
+            {bookingRequests.length === 0 ? (
+              <Card className="empty-state">
+                <CardContent>
+                  <Calendar className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p>No booking requests yet.</p>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="bookings-list">
+                {bookingRequests.map((b) => {
+                  const p = bookingProps[b.property_id];
+                  return (
+                    <Card key={b.id} className="booking-card">
+                      <CardContent className="booking-content">
+                        <div className="booking-details">
+                          <h3>{p?.title || "Property"}</h3>
+
+                          <div className="booking-info-grid">
+                            <div><strong>Buyer:</strong> {b.user_name}</div>
+                            <div><strong>Email:</strong> {b.user_email}</div>
+                            <div><strong>Check-in:</strong> {b.check_in}</div>
+                            <div><strong>Check-out:</strong> {b.check_out || "-"}</div>
+                            <div><strong>Guests:</strong> {b.guests}</div>
+                            <div>
+                              <strong>Status:</strong>{" "}
+                              <span className={`status-badge status-${b.status}`}>
+                                {b.status}
+                              </span>
+                            </div>
+                          </div>
+
+                          {b.message && (
+                            <div className="booking-message">
+                              <strong>Message:</strong> {b.message}
+                            </div>
+                          )}
+
+                          {b.status === "pending" && (
+                            <div className="flex gap-2 mt-3">
+                              <Button onClick={() => updateBookingStatus(b.id, "confirmed")}>
+                                Accept
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                onClick={() => updateBookingStatus(b.id, "cancelled")}
+                              >
+                                Decline
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </TabsContent>
+
           <TabsContent value="add-property">
             <Card>
               <CardHeader>
                 <CardTitle>Add New Property</CardTitle>
-                <CardDescription>
-                  Fill in the details to create a new listing.
-                </CardDescription>
+                <CardDescription>Fill in the details to create a new listing.</CardDescription>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleCreateProperty} className="auth-form">
@@ -1409,9 +1442,7 @@ function OwnerDashboardPage() {
                       id="title"
                       required
                       value={formData.title}
-                      onChange={(e) =>
-                        setFormData({ ...formData, title: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                     />
                   </div>
 
@@ -1421,9 +1452,7 @@ function OwnerDashboardPage() {
                       id="location"
                       required
                       value={formData.location}
-                      onChange={(e) =>
-                        setFormData({ ...formData, location: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, location: e.target.value })}
                     />
                   </div>
 
@@ -1433,9 +1462,7 @@ function OwnerDashboardPage() {
                       id="address"
                       required
                       value={formData.address}
-                      onChange={(e) =>
-                        setFormData({ ...formData, address: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, address: e.target.value })}
                     />
                   </div>
 
@@ -1447,9 +1474,7 @@ function OwnerDashboardPage() {
                       min="0"
                       required
                       value={formData.price}
-                      onChange={(e) =>
-                        setFormData({ ...formData, price: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, price: e.target.value })}
                     />
                   </div>
 
@@ -1462,9 +1487,7 @@ function OwnerDashboardPage() {
                         min="0"
                         required
                         value={formData.bedrooms}
-                        onChange={(e) =>
-                          setFormData({ ...formData, bedrooms: e.target.value })
-                        }
+                        onChange={(e) => setFormData({ ...formData, bedrooms: e.target.value })}
                       />
                     </div>
 
@@ -1476,9 +1499,7 @@ function OwnerDashboardPage() {
                         min="0"
                         required
                         value={formData.bathrooms}
-                        onChange={(e) =>
-                          setFormData({ ...formData, bathrooms: e.target.value })
-                        }
+                        onChange={(e) => setFormData({ ...formData, bathrooms: e.target.value })}
                       />
                     </div>
 
@@ -1490,9 +1511,7 @@ function OwnerDashboardPage() {
                         min="0"
                         required
                         value={formData.area}
-                        onChange={(e) =>
-                          setFormData({ ...formData, area: e.target.value })
-                        }
+                        onChange={(e) => setFormData({ ...formData, area: e.target.value })}
                       />
                     </div>
                   </div>
@@ -1504,23 +1523,17 @@ function OwnerDashboardPage() {
                       type="url"
                       required
                       value={formData.image_url}
-                      onChange={(e) =>
-                        setFormData({ ...formData, image_url: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
                     />
                   </div>
 
                   <div className="form-group">
-                    <Label htmlFor="amenities">
-                      Amenities (comma separated)
-                    </Label>
+                    <Label htmlFor="amenities">Amenities (comma separated)</Label>
                     <Input
                       id="amenities"
                       placeholder="Pool, Garden, Parking"
                       value={formData.amenities}
-                      onChange={(e) =>
-                        setFormData({ ...formData, amenities: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, amenities: e.target.value })}
                     />
                   </div>
 
@@ -1530,9 +1543,7 @@ function OwnerDashboardPage() {
                       id="description"
                       required
                       value={formData.description}
-                      onChange={(e) =>
-                        setFormData({ ...formData, description: e.target.value })
-                      }
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                     />
                   </div>
 
@@ -1581,7 +1592,7 @@ function LoginPage() {
   };
 
   return (
-    <div className="auth-page" data-testid="login-page">
+    <div className="auth-page">
       <div className="auth-container">
         <Card className="auth-card">
           <CardHeader>
@@ -1600,10 +1611,7 @@ function LoginPage() {
                   type="email"
                   required
                   value={formData.email}
-                  onChange={(e) =>
-                    setFormData({ ...formData, email: e.target.value })
-                  }
-                  data-testid="email-input"
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 />
               </div>
               <div className="form-group">
@@ -1613,18 +1621,10 @@ function LoginPage() {
                   type="password"
                   required
                   value={formData.password}
-                  onChange={(e) =>
-                    setFormData({ ...formData, password: e.target.value })
-                  }
-                  data-testid="password-input"
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 />
               </div>
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={loading}
-                data-testid="login-submit-btn"
-              >
+              <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? "Logging in..." : "Login"}
               </Button>
             </form>
@@ -1681,7 +1681,7 @@ function RegisterPage() {
   };
 
   return (
-    <div className="auth-page" data-testid="register-page">
+    <div className="auth-page">
       <div className="auth-container">
         <Card className="auth-card">
           <CardHeader>
@@ -1689,9 +1689,7 @@ function RegisterPage() {
               <Building2 className="w-12 h-12" />
             </div>
             <CardTitle>Create Account</CardTitle>
-            <CardDescription>
-              Sign up as a buyer or property owner (dealer)
-            </CardDescription>
+            <CardDescription>Sign up as a buyer or property owner (dealer)</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="auth-form">
@@ -1702,10 +1700,7 @@ function RegisterPage() {
                   type="text"
                   required
                   value={formData.name}
-                  onChange={(e) =>
-                    setFormData({ ...formData, name: e.target.value })
-                  }
-                  data-testid="name-input"
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 />
               </div>
 
@@ -1716,10 +1711,7 @@ function RegisterPage() {
                   type="email"
                   required
                   value={formData.email}
-                  onChange={(e) =>
-                    setFormData({ ...formData, email: e.target.value })
-                  }
-                  data-testid="email-input"
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 />
               </div>
 
@@ -1729,22 +1721,14 @@ function RegisterPage() {
                   id="phone"
                   type="tel"
                   value={formData.phone}
-                  onChange={(e) =>
-                    setFormData({ ...formData, phone: e.target.value })
-                  }
-                  data-testid="phone-input"
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                 />
               </div>
 
               <div className="form-group">
                 <Label htmlFor="role">Account Type</Label>
-                <Select
-                  value={formData.role}
-                  onValueChange={(value) =>
-                    setFormData({ ...formData, role: value })
-                  }
-                >
-                  <SelectTrigger id="role" data-testid="role-select">
+                <Select value={formData.role} onValueChange={(value) => setFormData({ ...formData, role: value })}>
+                  <SelectTrigger id="role">
                     <SelectValue placeholder="Select account type" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1762,19 +1746,11 @@ function RegisterPage() {
                   required
                   minLength="6"
                   value={formData.password}
-                  onChange={(e) =>
-                    setFormData({ ...formData, password: e.target.value })
-                  }
-                  data-testid="password-input"
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 />
               </div>
 
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={loading}
-                data-testid="register-submit-btn"
-              >
+              <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? "Creating account..." : "Sign Up"}
               </Button>
             </form>
@@ -1864,14 +1840,12 @@ function AdminPage() {
       await axios.put(
         `${API}/bookings/${bookingId}/status?status=${newStatus}`,
         {},
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+        { headers: { Authorization: `Bearer ${token}` } }
       );
       toast.success("Booking status updated");
       fetchBookings();
     } catch (error) {
-      toast.error("Failed to update booking status");
+      toast.error(error.response?.data?.detail || "Failed to update booking status");
     }
   };
 
@@ -1879,100 +1853,57 @@ function AdminPage() {
     <div className="page-container">
       <Navigation />
 
-      <div className="admin-page" data-testid="admin-page">
+      <div className="admin-page">
         <h1>Admin Dashboard</h1>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="admin-tabs">
-            <TabsTrigger value="overview" data-testid="tab-overview">
-              Overview
-            </TabsTrigger>
-            <TabsTrigger value="users" data-testid="tab-users">
-              Users
-            </TabsTrigger>
-            <TabsTrigger value="properties" data-testid="tab-properties">
-              Properties
-            </TabsTrigger>
-            <TabsTrigger value="bookings" data-testid="tab-bookings">
-              Bookings
-            </TabsTrigger>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="users">Users</TabsTrigger>
+            <TabsTrigger value="properties">Properties</TabsTrigger>
+            <TabsTrigger value="bookings">Bookings</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview">
-            <div className="stats-grid" data-testid="stats-grid">
+            <div className="stats-grid">
               <Card>
-                <CardHeader>
-                  <CardTitle>Total Users</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="stat-value" data-testid="stat-users">
-                    {stats.total_users || 0}
-                  </div>
-                </CardContent>
+                <CardHeader><CardTitle>Total Users</CardTitle></CardHeader>
+                <CardContent><div className="stat-value">{stats.total_users || 0}</div></CardContent>
               </Card>
-
               <Card>
-                <CardHeader>
-                  <CardTitle>Total Properties</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="stat-value" data-testid="stat-properties">
-                    {stats.total_properties || 0}
-                  </div>
-                </CardContent>
+                <CardHeader><CardTitle>Total Properties</CardTitle></CardHeader>
+                <CardContent><div className="stat-value">{stats.total_properties || 0}</div></CardContent>
               </Card>
-
               <Card>
-                <CardHeader>
-                  <CardTitle>Total Bookings</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="stat-value" data-testid="stat-bookings">
-                    {stats.total_bookings || 0}
-                  </div>
-                </CardContent>
+                <CardHeader><CardTitle>Total Bookings</CardTitle></CardHeader>
+                <CardContent><div className="stat-value">{stats.total_bookings || 0}</div></CardContent>
               </Card>
-
               <Card>
-                <CardHeader>
-                  <CardTitle>Pending Bookings</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="stat-value" data-testid="stat-pending">
-                    {stats.pending_bookings || 0}
-                  </div>
-                </CardContent>
+                <CardHeader><CardTitle>Pending Bookings</CardTitle></CardHeader>
+                <CardContent><div className="stat-value">{stats.pending_bookings || 0}</div></CardContent>
               </Card>
             </div>
           </TabsContent>
 
           <TabsContent value="users">
             <Card>
-              <CardHeader>
-                <CardTitle>All Users</CardTitle>
-              </CardHeader>
+              <CardHeader><CardTitle>All Users</CardTitle></CardHeader>
               <CardContent>
-                <div className="table-container" data-testid="users-table">
+                <div className="table-container">
                   <table>
                     <thead>
                       <tr>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Phone</th>
-                        <th>Role</th>
-                        <th>Joined</th>
+                        <th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Joined</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {users.map((user) => (
-                        <tr key={user.id}>
-                          <td>{user.name}</td>
-                          <td>{user.email}</td>
-                          <td>{user.phone || "N/A"}</td>
-                          <td>
-                            <span className="role-badge">{user.role}</span>
-                          </td>
-                          <td>{new Date(user.created_at).toLocaleDateString()}</td>
+                      {users.map((u) => (
+                        <tr key={u.id}>
+                          <td>{u.name}</td>
+                          <td>{u.email}</td>
+                          <td>{u.phone || "N/A"}</td>
+                          <td><span className="role-badge">{u.role}</span></td>
+                          <td>{new Date(u.created_at).toLocaleDateString()}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1984,39 +1915,24 @@ function AdminPage() {
 
           <TabsContent value="properties">
             <Card>
-              <CardHeader>
-                <CardTitle>All Properties</CardTitle>
-              </CardHeader>
+              <CardHeader><CardTitle>All Properties</CardTitle></CardHeader>
               <CardContent>
-                <div className="table-container" data-testid="properties-table">
+                <div className="table-container">
                   <table>
                     <thead>
                       <tr>
-                        <th>Title</th>
-                        <th>Location</th>
-                        <th>Type</th>
-                        <th>Price</th>
-                        <th>Status</th>
-                        <th>Created</th>
+                        <th>Title</th><th>Location</th><th>Type</th><th>Price</th><th>Status</th><th>Created</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {properties.map((property) => (
-                        <tr key={property.id}>
-                          <td>{property.title}</td>
-                          <td>{property.location}</td>
-                          <td>{property.property_type || "-"}</td>
-                          <td>${property.price.toLocaleString()}</td>
-                          <td>
-                            <span
-                              className={`status-badge status-${property.status}`}
-                            >
-                              {property.status}
-                            </span>
-                          </td>
-                          <td>
-                            {new Date(property.created_at).toLocaleDateString()}
-                          </td>
+                      {properties.map((p) => (
+                        <tr key={p.id}>
+                          <td>{p.title}</td>
+                          <td>{p.location}</td>
+                          <td>{p.property_type || "-"}</td>
+                          <td>${p.price.toLocaleString()}</td>
+                          <td><span className={`status-badge status-${p.status}`}>{p.status}</span></td>
+                          <td>{new Date(p.created_at).toLocaleDateString()}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -2028,56 +1944,36 @@ function AdminPage() {
 
           <TabsContent value="bookings">
             <Card>
-              <CardHeader>
-                <CardTitle>All Bookings</CardTitle>
-              </CardHeader>
+              <CardHeader><CardTitle>All Bookings</CardTitle></CardHeader>
               <CardContent>
-                <div className="table-container" data-testid="bookings-table">
+                <div className="table-container">
                   <table>
                     <thead>
                       <tr>
-                        <th>User</th>
-                        <th>Property ID</th>
-                        <th>Check-in</th>
-                        <th>Check-out</th>
-                        <th>Guests</th>
-                        <th>Status</th>
-                        <th>Actions</th>
+                        <th>User</th><th>Property</th><th>Check-in</th><th>Check-out</th><th>Guests</th><th>Status</th><th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {bookings.map((booking) => (
-                        <tr key={booking.id}>
-                          <td>{booking.user_name}</td>
-                          <td>{booking.property_id.substring(0, 8)}...</td>
-                          <td>{booking.check_in}</td>
-                          <td>{booking.check_out}</td>
-                          <td>{booking.guests}</td>
-                          <td>
-                            <span
-                              className={`status-badge status-${booking.status}`}
-                            >
-                              {booking.status}
-                            </span>
-                          </td>
+                      {bookings.map((b) => (
+                        <tr key={b.id}>
+                          <td>{b.user_name}</td>
+                          <td>{b.property_id.substring(0, 8)}...</td>
+                          <td>{b.check_in}</td>
+                          <td>{b.check_out}</td>
+                          <td>{b.guests}</td>
+                          <td><span className={`status-badge status-${b.status}`}>{b.status}</span></td>
                           <td>
                             <Select
-                              value={booking.status}
-                              onValueChange={(val) =>
-                                updateBookingStatus(booking.id, val)
-                              }
+                              value={b.status}
+                              onValueChange={(val) => updateBookingStatus(b.id, val)}
                             >
                               <SelectTrigger className="w-32">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="pending">Pending</SelectItem>
-                                <SelectItem value="confirmed">
-                                  Confirmed
-                                </SelectItem>
-                                <SelectItem value="cancelled">
-                                  Cancelled
-                                </SelectItem>
+                                <SelectItem value="confirmed">Confirmed</SelectItem>
+                                <SelectItem value="cancelled">Cancelled</SelectItem>
                               </SelectContent>
                             </Select>
                           </td>
@@ -2103,12 +1999,14 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<HomePage />} />
+
+          {/* still available (but hidden for owner in navbar) */}
           <Route path="/properties" element={<PropertiesPage />} />
+
           <Route path="/property/:id" element={<PropertyPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
 
-          {/* ✅ NEW: Favorites route */}
           <Route
             path="/favorites"
             element={
@@ -2126,6 +2024,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/owner"
             element={
@@ -2134,6 +2033,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/admin"
             element={
