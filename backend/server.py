@@ -290,6 +290,12 @@ class Favorite(BaseModel):
     created_at: str
 
 
+# ---------------- SMALL HELPERS ----------------
+
+def normalize_status(v: Optional[str]) -> str:
+    return (v or "").strip().lower()
+
+
 # ---------------- AUTH ROUTES ----------------
 
 
@@ -551,7 +557,7 @@ async def create_booking(booking_data: BookingCreate, current_user: dict = Depen
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    if prop["status"] != "available":
+    if normalize_status(prop.get("status")) != "available":
         raise HTTPException(status_code=400, detail="Property is not available for booking")
 
     if prop["owner_id"] == current_user["id"]:
@@ -610,7 +616,7 @@ async def update_booking_status(
         raise HTTPException(status_code=400, detail="Booking already confirmed")
 
     if status == "confirmed":
-        if prop.get("status") != "available":
+        if normalize_status(prop.get("status")) != "available":
             raise HTTPException(status_code=400, detail="Property is no longer available")
 
         await db.bookings.update_one({"id": booking_id}, {"$set": {"status": "confirmed"}})
@@ -677,7 +683,17 @@ async def create_payment(payment_data: PaymentCreate, current_user: dict = Depen
     }
     await db.payments.insert_one(doc)
 
+    # ✅ confirm booking
     await db.bookings.update_one({"id": payment_data.booking_id}, {"$set": {"status": "confirmed"}})
+
+    # ✅ ALSO lock property + cancel other pending bookings (same logic as status confirm)
+    prop = await db.properties.find_one({"id": booking["property_id"]})
+    if prop:
+        await db.properties.update_one({"id": prop["id"]}, {"$set": {"status": "booked"}})
+        await db.bookings.update_many(
+            {"property_id": prop["id"], "id": {"$ne": booking["id"]}, "status": "pending"},
+            {"$set": {"status": "cancelled"}},
+        )
 
     return doc
 
