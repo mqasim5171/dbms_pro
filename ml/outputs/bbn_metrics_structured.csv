@@ -1,0 +1,2 @@
+best_threshold,accuracy,precision,recall,f1,roc_auc,rows_total,rows_train,rows_test,positive_test,negative_test,cm_tn,cm_fp,cm_fn,cm_tp
+0.2,0.44166666666666665,0.26582278481012656,0.7,0.3853211009174312,0.5030092592592593,1196,956,240,60,180,64,116,18,42

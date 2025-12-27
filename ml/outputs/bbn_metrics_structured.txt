@@ -1,0 +1,11 @@
+ best_threshold  accuracy  precision  recall       f1  roc_auc  rows_total  rows_train  rows_test  positive_test  negative_test  cm_tn  cm_fp  cm_fn  cm_tp
+            0.2  0.441667   0.265823     0.7 0.385321 0.503009        1196         956        240             60            180     64    116     18     42
+
+BBN Structure (edges):
+pref_city -> prop_city
+pref_type -> prop_type
+pref_price_bucket -> price_bucket
+prop_city -> liked
+prop_type -> liked
+price_bucket -> liked
+beds_bucket -> liked

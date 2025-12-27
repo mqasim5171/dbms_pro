@@ -1,0 +1,2 @@
+accuracy,precision,recall,f1,roc_auc,rows_total,rows_train,rows_test,positive_test,negative_test
+0.25,0.11842105263157894,0.9473684210526315,0.21052631578947367,0.5794377247466492,900,720,180,19,161

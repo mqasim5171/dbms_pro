@@ -112,6 +112,18 @@ function AuthProvider({ children }) {
 
 const useAuth = () => React.useContext(AuthContext);
 
+
+
+
+// ---------------- RECOMMENDATIONS HELPERS ----------------
+
+async function fetchRecommendations(token, limit = 10) {
+  const res = await axios.get(`${API}/recommendations?limit=${limit}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.data;
+}
+
 // ---------------- PROTECTED ROUTE ----------------
 
 function ProtectedRoute({ children, adminOnly = false }) {
@@ -143,6 +155,12 @@ function Navigation() {
           <a href="/" data-testid="nav-home">
             Home
           </a>
+
+          {user?.role === "buyer" && (
+            <a href="/recommendations" data-testid="nav-recommendations">
+              Recommendations
+            </a>
+          )}
 
           {/* ✅ Optional: hide Properties link for owner */}
           {user?.role !== "owner" && (
@@ -288,18 +306,182 @@ function Navigation() {
   );
 }
 
+
+// ---------------- RECOMMENDATIONS PAGE ----------------
+
+function RecommendationsPage() {
+  const { user, token } = useAuth();
+  const navigate = useNavigate();
+
+  const [loading, setLoading] = useState(true);
+  const [meta, setMeta] = useState(null);
+  const [recs, setRecs] = useState([]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    // buyers only (optional)
+    if (user.role !== "buyer") {
+      toast.error("Recommendations are for buyers only");
+      navigate("/");
+      return;
+    }
+
+    load();
+    // eslint-disable-next-line
+  }, [user]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await fetchRecommendations(token, 12);
+
+      // data = { trained_at, prefs, recommendations: [{property_id, score, property}] ... }
+      setMeta({
+        trained_at: data.trained_at,
+        rows_used: data.rows_used,
+        prefs: data.prefs,
+      });
+
+      // filter junk safely on frontend too (extra protection)
+      const clean = (data.recommendations || []).filter((r) => {
+        const p = r.property;
+        if (!p) return false;
+        if (!p.city_id || !p.property_type_id) return false;
+        if (typeof p.image_url === "string" && p.image_url.startsWith("data:image")) return false;
+        return true;
+      });
+
+      setRecs(clean);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load recommendations");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="page-container">
+      <Navigation />
+
+      <div className="properties-page">
+        <div className="page-header">
+          <h1>Recommended for You</h1>
+          <p className="page-subtitle">
+            Personalized suggestions based on your activity (BBN model)
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="loading-screen">Loading recommendations...</div>
+        ) : recs.length === 0 ? (
+          <Card className="empty-state">
+            <CardContent>
+              <p>No recommendations yet. Try saving a few properties ❤️</p>
+              <Button className="mt-4" onClick={() => navigate("/properties")}>
+                Browse Properties
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            {/* Optional model meta for viva/demo */}
+            {meta && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle>Model Info</CardTitle>
+                  <CardDescription>
+                    Trained at: {meta.trained_at ? new Date(meta.trained_at).toLocaleString() : "-"} •
+                    Rows used: {meta.rows_used ?? "-"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-2">
+                    <div><strong>Preference City (id):</strong> {meta.prefs?.pref_city || "-"}</div>
+                    <div><strong>Preference Type (id):</strong> {meta.prefs?.pref_type || "-"}</div>
+                    <div><strong>Preference Price Bucket:</strong> {meta.prefs?.pref_price_bucket || "-"}</div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            <div className="properties-grid" data-testid="recommendations-grid">
+              {recs.map((rec) => {
+                const p = rec.property;
+                const scorePct = Math.round((rec.score || 0) * 100);
+
+                return (
+                  <Card key={p.id} className="property-card">
+                    <div
+                      className="property-image"
+                      onClick={() => navigate(`/property/${p.id}`)}
+                    >
+                      <img src={p.image_url} alt={p.title} />
+                      <div className="property-badge">
+                        Match {scorePct}%
+                      </div>
+                    </div>
+
+                    <CardContent className="property-info">
+                      <h3 className="property-title">{p.title}</h3>
+
+                      <div className="property-location">
+                        <MapPin className="w-4 h-4" />
+                        <span>{p.location}</span>
+                      </div>
+
+                      <div className="property-features">
+                        <span><Bed className="w-4 h-4" /> {p.bedrooms}</span>
+                        <span><Bath className="w-4 h-4" /> {p.bathrooms}</span>
+                        <span><Maximize className="w-4 h-4" /> {p.area} sq ft</span>
+                      </div>
+
+                      <div className="property-footer">
+                        <span className="property-price">
+                          ${Number(p.price || 0).toLocaleString()}
+                        </span>
+                        <Button onClick={() => navigate(`/property/${p.id}`)}>
+                          View Details
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------------- HOME PAGE ----------------
+
 
 function HomePage() {
   const navigate = useNavigate();
+  const { user, token } = useAuth(); // Grab user and token from auth context
   const [properties, setProperties] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [recs, setRecs] = useState([]);
+  const [recsLoading, setRecsLoading] = useState(false);
 
+  // Fetch properties (already done)
   useEffect(() => {
     fetchProperties();
     // eslint-disable-next-line
   }, []);
 
+  // Fetch recommendations for buyers only
+  useEffect(() => {
+    if (user?.role === "buyer" && token) {
+      fetchHomeRecs();
+    }
+    // eslint-disable-next-line
+  }, [user, token]);
+
+  // Fetch properties from backend
   const fetchProperties = async () => {
     try {
       const response = await axios.get(`${API}/properties`);
@@ -309,6 +491,21 @@ function HomePage() {
     }
   };
 
+  // Fetch recommendations based on the buyer's preferences
+  const fetchHomeRecs = async () => {
+    setRecsLoading(true);
+    try {
+      const data = await fetchRecommendations(token, 6);  // Get top 6 recommendations
+      const clean = (data.recommendations || []).filter((r) => r?.property);  // Clean bad data
+      setRecs(clean);
+    } catch (e) {
+      console.log("Recommendations unavailable", e?.response?.data || e.message);
+    } finally {
+      setRecsLoading(false);
+    }
+  };
+
+  // Filter properties based on search term
   const filteredProperties = properties.filter(
     (p) =>
       p.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -319,6 +516,7 @@ function HomePage() {
     <div className="page-container">
       <Navigation />
 
+      {/* Hero Section */}
       <section className="hero-section" data-testid="hero-section">
         <div className="hero-content">
           <h1 className="hero-title">Find Your Dream Home</h1>
@@ -341,6 +539,80 @@ function HomePage() {
         </div>
       </section>
 
+      {/* Recommended for You Section (visible only for buyers) */}
+      {user?.role === "buyer" && (
+        <section className="properties-section">
+          <div className="section-header">
+            <h2>Recommended for You</h2>
+            <p>Personalized suggestions based on your activity (BBN model)</p>
+            <div className="flex gap-2 mt-2">
+              <Button variant="outline" onClick={() => navigate("/recommendations")}>
+                View All
+              </Button>
+            </div>
+          </div>
+
+          {recsLoading ? (
+            <div className="loading-screen">Loading recommendations...</div>
+          ) : recs.length === 0 ? (
+            <Card className="empty-state">
+              <CardContent>
+                <p>No recommendations yet. Try saving a few properties ❤️</p>
+                <Button className="mt-4" onClick={() => navigate("/properties")}>
+                  Browse Properties
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="properties-grid" data-testid="recommendations-grid">
+              {recs.map((rec) => {
+                const p = rec.property;
+                const scorePct = Math.round((rec.score || 0) * 100);
+
+                return (
+                  <Card key={p.id} className="property-card">
+                    <div
+                      className="property-image"
+                      onClick={() => navigate(`/property/${p.id}`)}
+                    >
+                      <img src={p.image_url} alt={p.title} />
+                      <div className="property-badge">
+                        Match {scorePct}%
+                      </div>
+                    </div>
+
+                    <CardContent className="property-info">
+                      <h3 className="property-title">{p.title}</h3>
+
+                      <div className="property-location">
+                        <MapPin className="w-4 h-4" />
+                        <span>{p.location}</span>
+                      </div>
+
+                      <div className="property-features">
+                        <span><Bed className="w-4 h-4" /> {p.bedrooms}</span>
+                        <span><Bath className="w-4 h-4" /> {p.bathrooms}</span>
+                        <span><Maximize className="w-4 h-4" /> {p.area} sq ft</span>
+                      </div>
+
+                      <div className="property-footer">
+                        <span className="property-price">
+                          ${Number(p.price || 0).toLocaleString()}
+                        </span>
+                        <Button onClick={() => navigate(`/property/${p.id}`)}>
+                          View Details
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Featured Properties Section */}
       <section className="properties-section">
         <div className="section-header">
           <h2>Featured Properties</h2>
@@ -396,6 +668,9 @@ function HomePage() {
     </div>
   );
 }
+
+
+
 
 // ---------------- FAVORITES PAGE ----------------
 
@@ -2206,6 +2481,15 @@ function App() {
             element={
               <ProtectedRoute>
                 <FavoritesPage />
+              </ProtectedRoute>
+            }
+          />
+
+            <Route
+            path="/recommendations"
+            element={
+              <ProtectedRoute>
+                <RecommendationsPage />
               </ProtectedRoute>
             }
           />

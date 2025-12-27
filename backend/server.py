@@ -1,10 +1,10 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from enum import Enum
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
@@ -12,9 +12,18 @@ import jwt
 import os
 import logging
 import uuid
+import random
 from pathlib import Path
 from fastapi import UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+# ✅ BBN imports
+from collections import Counter, defaultdict
+import pandas as pd
+import numpy as np
+from pgmpy.models import DiscreteBayesianNetwork
+from pgmpy.estimators import MaximumLikelihoodEstimator
+from pgmpy.inference import VariableElimination
 
 # ---------------- ENV & DB SETUP ----------------
 
@@ -67,6 +76,20 @@ def decode_access_token(token: str) -> dict:
 app = FastAPI(title="Real Estate Listing & Booking API")
 api_router = APIRouter(prefix="/api")
 
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 allowed_origins = [
     "http://localhost:3000",
     "https://fancy-gelato-c39f14.netlify.app",
@@ -80,7 +103,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Health route (Render etc.)
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Real Estate Listing & Booking API"}
@@ -88,16 +111,13 @@ def root():
 
 # ---------------- ROLES & DEPENDENCIES ----------------
 
-
 class UserRole(str, Enum):
     buyer = "buyer"
-    owner = "owner"  # dealer
+    owner = "owner"
     admin = "admin"
+    user = "user"
 
-
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     payload = decode_access_token(token)
     user_id = payload.get("user_id")
@@ -119,15 +139,12 @@ async def get_admin_user(current_user: dict = Depends(get_current_user)):
 
 # ---------------- Pydantic MODELS ----------------
 
-# ---- Auth / User ----
-
-
 class UserRegister(BaseModel):
     email: EmailStr
     password: str
     name: str
     phone: Optional[str] = None
-    role: UserRole = UserRole.buyer  # buyer / owner / admin (admin used from seed only)
+    role: UserRole = UserRole.buyer
 
 
 class UserLogin(BaseModel):
@@ -142,9 +159,6 @@ class User(BaseModel):
     phone: Optional[str] = None
     role: UserRole
     created_at: str
-
-
-# ---- Cities & Property Types ----
 
 
 class CityCreate(BaseModel):
@@ -165,23 +179,18 @@ class PropertyType(BaseModel):
     type_name: str
 
 
-# ---- Properties ----
-
-
 class PropertyCreate(BaseModel):
     title: str
     description: str
     price: float
-    # For DBMS spec, we have city & property type as separate tables:
     city_id: Optional[str] = None
     property_type_id: Optional[str] = None
-    # For frontend compatibility, keep location/address too:
     location: str
     address: str
     bedrooms: int
     bathrooms: int
     area: float
-    status: str = "available"  # available / booked / sold
+    status: str = "available"
     image_url: str
     amenities: List[str] = []
 
@@ -205,13 +214,10 @@ class Property(BaseModel):
     owner_id: str
 
 
-# ---- Bookings ----
-
-
 class BookingCreate(BaseModel):
     property_id: str
-    check_in: str  # maps to start_date in DBMS concept
-    check_out: Optional[str] = None  # maps to end_date (optional)
+    check_in: str
+    check_out: Optional[str] = None
     guests: int
     message: Optional[str] = None
     total_amount: Optional[float] = None
@@ -227,12 +233,9 @@ class Booking(BaseModel):
     check_out: Optional[str] = None
     guests: int
     message: Optional[str] = None
-    status: str = "pending"  # pending / confirmed / cancelled
+    status: str = "pending"
     total_amount: float
     created_at: str
-
-
-# ---- Payments ----
 
 
 class PaymentMethod(str, Enum):
@@ -253,11 +256,8 @@ class Payment(BaseModel):
     amount: float
     method: PaymentMethod
     payment_date: str
-    status: str  # paid / pending / failed
+    status: str
     created_at: str
-
-
-# ---- Reviews ----
 
 
 class ReviewCreate(BaseModel):
@@ -274,9 +274,6 @@ class Review(BaseModel):
     rating: int
     comment: Optional[str] = None
     created_at: str
-
-
-# ---- Favorites (Wishlist) ----
 
 
 class FavoriteCreate(BaseModel):
@@ -296,8 +293,186 @@ def normalize_status(v: Optional[str]) -> str:
     return (v or "").strip().lower()
 
 
-# ---------------- AUTH ROUTES ----------------
+# ---------------- BBN RECOMMENDER (DWDM Integration) ----------------
 
+BBN_FEATURES = [
+    "pref_city", "pref_type", "pref_price_bucket",
+    "prop_city", "prop_type", "price_bucket", "beds_bucket"
+]
+BBN_TARGET = "liked"
+
+BBN_CACHE: Dict[str, Any] = {
+    "infer": None,          # VariableElimination
+    "model": None,          # DiscreteBayesianNetwork
+    "trained_at": None,
+    "rows_used": 0,
+}
+
+def _bucket_price(price: float) -> str:
+    if price < 150000:
+        return "low"
+    if price < 500000:
+        return "mid"
+    return "high"
+
+def _bucket_beds(b: int) -> str:
+    if b <= 2:
+        return "1-2"
+    if b <= 4:
+        return "3-4"
+    return "5+"
+
+def _most_common(values, default="unknown"):
+    if not values:
+        return default
+    return Counter(values).most_common(1)[0][0]
+
+def _prob_one(q) -> float:
+    states = list(q.state_names[BBN_TARGET])
+    if "1" in states:
+        return float(q.values[states.index("1")])
+    return float(q.values[-1])
+
+async def _build_user_prefs(user_id: str) -> dict:
+    favs = await db.favorites.find({"user_id": user_id}, {"_id": 0}).to_list(5000)
+    books = await db.bookings.find({"user_id": user_id}, {"_id": 0}).to_list(5000)
+    liked_prop_ids = set([f["property_id"] for f in favs] + [b["property_id"] for b in books])
+
+    if not liked_prop_ids:
+        return {"pref_city": "unknown", "pref_type": "unknown", "pref_price_bucket": "unknown"}
+
+    props = await db.properties.find({"id": {"$in": list(liked_prop_ids)}}, {"_id": 0}).to_list(5000)
+
+    cities = [str(p.get("city_id", "unknown")) for p in props]
+    types = [str(p.get("property_type_id", "unknown")) for p in props]
+    prices = [_bucket_price(float(p.get("price", 0))) for p in props]
+
+    return {
+        "pref_city": _most_common(cities),
+        "pref_type": _most_common(types),
+        "pref_price_bucket": _most_common(prices),
+    }
+
+async def _train_bbn_from_db(max_pos_per_user: int = 10, neg_ratio: int = 3) -> dict:
+    """
+    Builds hard-negative dataset from Mongo and trains a structured BBN.
+    """
+    users = await db.users.find({}, {"_id": 0, "id": 1, "role": 1}).to_list(10000)
+    props = await db.properties.find({}, {"_id": 0, "id": 1, "city_id": 1, "property_type_id": 1, "price": 1, "bedrooms": 1}).to_list(20000)
+    favs = await db.favorites.find({}, {"_id": 0, "user_id": 1, "property_id": 1}).to_list(200000)
+    books = await db.bookings.find({}, {"_id": 0, "user_id": 1, "property_id": 1}).to_list(200000)
+
+    liked_pairs = set()
+    for x in favs:
+        liked_pairs.add((x["user_id"], x["property_id"]))
+    for x in books:
+        liked_pairs.add((x["user_id"], x["property_id"]))
+
+    if not liked_pairs:
+        raise HTTPException(status_code=400, detail="No favorites/bookings found. Run /api/admin/seed-reco first.")
+
+    prop_map = {p["id"]: p for p in props}
+
+    hist_city = defaultdict(list)
+    hist_type = defaultdict(list)
+    hist_price = defaultdict(list)
+
+    for (uid, pid) in liked_pairs:
+        p = prop_map.get(pid)
+        if not p:
+            continue
+        hist_city[uid].append(str(p.get("city_id", "unknown")))
+        hist_type[uid].append(str(p.get("property_type_id", "unknown")))
+        hist_price[uid].append(_bucket_price(float(p.get("price", 0))))
+
+    buyers = [u for u in users if str(u.get("role", "")).lower() == "buyer"]
+    if not buyers:
+        raise HTTPException(status_code=400, detail="No buyer users found. Run /api/admin/seed-reco first.")
+
+    random.seed(42)
+    rows = []
+
+    for u in buyers:
+        uid = u["id"]
+        pref_city = _most_common(hist_city[uid])
+        pref_type = _most_common(hist_type[uid])
+        pref_price = _most_common(hist_price[uid])
+
+        user_pos = [pid for (xuid, pid) in liked_pairs if xuid == uid and pid in prop_map]
+        random.shuffle(user_pos)
+        user_pos = user_pos[:max_pos_per_user]
+        if not user_pos:
+            continue
+
+        for pid in user_pos:
+            p = prop_map[pid]
+
+            # positive
+            rows.append({
+                "pref_city": pref_city,
+                "pref_type": pref_type,
+                "pref_price_bucket": pref_price,
+                "prop_city": str(p.get("city_id", "unknown")),
+                "prop_type": str(p.get("property_type_id", "unknown")),
+                "price_bucket": _bucket_price(float(p.get("price", 0))),
+                "beds_bucket": _bucket_beds(int(p.get("bedrooms", 0))),
+                "liked": "1",
+            })
+
+            # hard negatives (mismatch)
+            hard_candidates = []
+            for q in props:
+                if q["id"] == pid:
+                    continue
+                q_city = str(q.get("city_id", "unknown"))
+                q_type = str(q.get("property_type_id", "unknown"))
+                q_price = _bucket_price(float(q.get("price", 0)))
+
+                mismatch = (
+                    (pref_city != "unknown" and q_city != pref_city) or
+                    (pref_type != "unknown" and q_type != pref_type) or
+                    (pref_price != "unknown" and q_price != pref_price)
+                )
+                if mismatch:
+                    hard_candidates.append(q)
+
+            if hard_candidates:
+                negs = random.sample(hard_candidates, k=min(len(hard_candidates), neg_ratio))
+                for q in negs:
+                    rows.append({
+                        "pref_city": pref_city,
+                        "pref_type": pref_type,
+                        "pref_price_bucket": pref_price,
+                        "prop_city": str(q.get("city_id", "unknown")),
+                        "prop_type": str(q.get("property_type_id", "unknown")),
+                        "price_bucket": _bucket_price(float(q.get("price", 0))),
+                        "beds_bucket": _bucket_beds(int(q.get("bedrooms", 0))),
+                        "liked": "0",
+                    })
+
+    if len(rows) < 200:
+        raise HTTPException(status_code=400, detail="Not enough rows to train recommender. Increase interactions using seed-reco.")
+
+    df = pd.DataFrame(rows).astype(str)
+
+    # ✅ structured causal network
+    edges = [
+        ("pref_city", "prop_city"),
+        ("pref_type", "prop_type"),
+        ("pref_price_bucket", "price_bucket"),
+        ("prop_city", BBN_TARGET),
+        ("prop_type", BBN_TARGET),
+        ("price_bucket", BBN_TARGET),
+        ("beds_bucket", BBN_TARGET),
+    ]
+
+    model = DiscreteBayesianNetwork(edges)
+    model.fit(df[BBN_FEATURES + [BBN_TARGET]], estimator=MaximumLikelihoodEstimator)
+    infer = VariableElimination(model)
+
+    return {"infer": infer, "model": model, "rows": int(len(df)), "edges": edges}
+
+# ---------------- AUTH ROUTES ----------------
 
 @api_router.post("/auth/register")
 async def register(user_data: UserRegister):
@@ -317,24 +492,15 @@ async def register(user_data: UserRegister):
         "role": user_data.role.value,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-
     await db.users.insert_one(user_doc)
 
-    access_token = create_access_token(
-        {"user_id": user_id, "email": user_data.email, "role": user_data.role.value}
-    )
+    access_token = create_access_token({"user_id": user_id, "email": user_data.email, "role": user_data.role.value})
 
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": {
-            "id": user_id,
-            "email": user_data.email,
-            "name": user_data.name,
-            "role": user_data.role.value,
-        },
+        "user": {"id": user_id, "email": user_data.email, "name": user_data.name, "role": user_data.role.value},
     }
-
 
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin):
@@ -345,39 +511,23 @@ async def login(credentials: UserLogin):
     if not verify_password(credentials.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    access_token = create_access_token(
-        {"user_id": user["id"], "email": user["email"], "role": user["role"]}
-    )
+    access_token = create_access_token({"user_id": user["id"], "email": user["email"], "role": user["role"]})
 
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "name": user["name"],
-            "role": user["role"],
-        },
+        "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]},
     }
-
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
-    return {
-        "id": current_user["id"],
-        "email": current_user["email"],
-        "name": current_user["name"],
-        "role": current_user["role"],
-    }
-
+    return {"id": current_user["id"], "email": current_user["email"], "name": current_user["name"], "role": current_user["role"]}
 
 # ---------------- CITY & PROPERTY TYPE ROUTES ----------------
 
 @api_router.get("/cities", response_model=List[City])
 async def list_cities():
-    docs = await db.cities.find({}, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.cities.find({}, {"_id": 0}).to_list(1000)
 
 @api_router.post("/cities", response_model=City)
 async def create_city(city_data: CityCreate, current_user: dict = Depends(get_admin_user)):
@@ -386,22 +536,16 @@ async def create_city(city_data: CityCreate, current_user: dict = Depends(get_ad
     await db.cities.insert_one(doc)
     return doc
 
-
 @api_router.get("/property-types", response_model=List[PropertyType])
 async def list_property_types():
-    docs = await db.property_types.find({}, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.property_types.find({}, {"_id": 0}).to_list(1000)
 
 @api_router.post("/property-types", response_model=PropertyType)
-async def create_property_type(
-    type_data: PropertyTypeCreate, current_user: dict = Depends(get_admin_user)
-):
+async def create_property_type(type_data: PropertyTypeCreate, current_user: dict = Depends(get_admin_user)):
     type_id = str(uuid.uuid4())
     doc = {"id": type_id, "type_name": type_data.type_name}
     await db.property_types.insert_one(doc)
     return doc
-
 
 # ---------------- PROPERTY ROUTES ----------------
 
@@ -416,7 +560,6 @@ async def get_properties(
     bathrooms: Optional[int] = None,
 ):
     query: dict = {}
-
     if status:
         query["status"] = status
     if city_id:
@@ -428,16 +571,14 @@ async def get_properties(
     if bathrooms is not None:
         query["bathrooms"] = {"$gte": bathrooms}
     if min_price is not None or max_price is not None:
-        price_filter = {}
+        pf = {}
         if min_price is not None:
-            price_filter["$gte"] = min_price
+            pf["$gte"] = min_price
         if max_price is not None:
-            price_filter["$lte"] = max_price
-        query["price"] = price_filter
+            pf["$lte"] = max_price
+        query["price"] = pf
 
-    properties = await db.properties.find(query, {"_id": 0}).to_list(1000)
-    return properties
-
+    return await db.properties.find(query, {"_id": 0}).to_list(1000)
 
 @api_router.get("/properties/{property_id}", response_model=Property)
 async def get_property(property_id: str):
@@ -446,14 +587,10 @@ async def get_property(property_id: str):
         raise HTTPException(status_code=404, detail="Property not found")
     return doc
 
-
 @api_router.post("/properties", response_model=Property)
 async def create_property(property_data: PropertyCreate, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.owner.value, UserRole.admin.value]:
-        raise HTTPException(
-            status_code=403,
-            detail="Only owners (dealers) or admin can create properties",
-        )
+        raise HTTPException(status_code=403, detail="Only owners (dealers) or admin can create properties")
 
     property_id = str(uuid.uuid4())
     doc = {
@@ -465,43 +602,28 @@ async def create_property(property_data: PropertyCreate, current_user: dict = De
     await db.properties.insert_one(doc)
     return doc
 
-
 @api_router.put("/properties/{property_id}", response_model=Property)
-async def update_property(
-    property_id: str,
-    property_data: PropertyCreate,
-    current_user: dict = Depends(get_current_user),
-):
+async def update_property(property_id: str, property_data: PropertyCreate, current_user: dict = Depends(get_current_user)):
     existing = await db.properties.find_one({"id": property_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Property not found")
-
     if existing["owner_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
         raise HTTPException(status_code=403, detail="Not authorized to update this property")
 
-    updated_doc = {
-        **property_data.model_dump(),
-        "owner_id": existing["owner_id"],
-        "created_at": existing["created_at"],
-    }
-
+    updated_doc = {**property_data.model_dump(), "owner_id": existing["owner_id"], "created_at": existing["created_at"]}
     await db.properties.update_one({"id": property_id}, {"$set": updated_doc})
-    final_doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
-    return final_doc
-
+    return await db.properties.find_one({"id": property_id}, {"_id": 0})
 
 @api_router.delete("/properties/{property_id}")
 async def delete_property(property_id: str, current_user: dict = Depends(get_current_user)):
     existing = await db.properties.find_one({"id": property_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Property not found")
-
     if existing["owner_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
         raise HTTPException(status_code=403, detail="Not authorized to delete this property")
 
     await db.properties.delete_one({"id": property_id})
     return {"message": "Property deleted successfully"}
-
 
 @api_router.get("/owner/my-properties", response_model=List[Property])
 async def get_my_properties(current_user: dict = Depends(get_current_user)):
@@ -512,27 +634,21 @@ async def get_my_properties(current_user: dict = Depends(get_current_user)):
     if current_user["role"] == UserRole.owner.value:
         query["owner_id"] = current_user["id"]
 
-    docs = await db.properties.find(query, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.properties.find(query, {"_id": 0}).to_list(1000)
 
 # ---------------- BOOKING ROUTES ----------------
 
 @api_router.get("/bookings", response_model=List[Booking])
 async def get_bookings(current_user: dict = Depends(get_current_user)):
     if current_user["role"] == UserRole.admin.value:
-        docs = await db.bookings.find({}, {"_id": 0}).to_list(1000)
-        return docs
+        return await db.bookings.find({}, {"_id": 0}).to_list(1000)
 
     if current_user["role"] == UserRole.owner.value:
         owner_props = await db.properties.find({"owner_id": current_user["id"]}, {"id": 1}).to_list(1000)
         prop_ids = [p["id"] for p in owner_props]
-        docs = await db.bookings.find({"property_id": {"$in": prop_ids}}, {"_id": 0}).to_list(1000)
-        return docs
+        return await db.bookings.find({"property_id": {"$in": prop_ids}}, {"_id": 0}).to_list(1000)
 
-    docs = await db.bookings.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.bookings.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(1000)
 
 @api_router.get("/bookings/{booking_id}", response_model=Booking)
 async def get_booking(booking_id: str, current_user: dict = Depends(get_current_user)):
@@ -546,7 +662,6 @@ async def get_booking(booking_id: str, current_user: dict = Depends(get_current_
             raise HTTPException(status_code=403, detail="Not authorized to view this booking")
 
     return booking
-
 
 @api_router.post("/bookings", response_model=Booking)
 async def create_booking(booking_data: BookingCreate, current_user: dict = Depends(get_current_user)):
@@ -580,18 +695,11 @@ async def create_booking(booking_data: BookingCreate, current_user: dict = Depen
         "total_amount": total_amount,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-
     await db.bookings.insert_one(doc)
     return doc
 
-
-# ✅ UPDATED: status validation + confirm locks property + cancels others
 @api_router.put("/bookings/{booking_id}/status", response_model=Booking)
-async def update_booking_status(
-    booking_id: str,
-    status: str,
-    current_user: dict = Depends(get_current_user),
-):
+async def update_booking_status(booking_id: str, status: str, current_user: dict = Depends(get_current_user)):
     if status not in ["pending", "confirmed", "cancelled"]:
         raise HTTPException(status_code=400, detail="Invalid status")
 
@@ -603,14 +711,8 @@ async def update_booking_status(
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    if (
-        current_user["role"] != UserRole.admin.value
-        and prop["owner_id"] != current_user["id"]
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Only property owner or admin can update booking status",
-        )
+    if current_user["role"] != UserRole.admin.value and prop["owner_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Only property owner or admin can update booking status")
 
     if booking.get("status") == "confirmed":
         raise HTTPException(status_code=400, detail="Booking already confirmed")
@@ -621,7 +723,6 @@ async def update_booking_status(
 
         await db.bookings.update_one({"id": booking_id}, {"$set": {"status": "confirmed"}})
         await db.properties.update_one({"id": prop["id"]}, {"$set": {"status": "booked"}})
-
         await db.bookings.update_many(
             {"property_id": prop["id"], "id": {"$ne": booking_id}, "status": "pending"},
             {"$set": {"status": "cancelled"}},
@@ -629,37 +730,29 @@ async def update_booking_status(
     else:
         await db.bookings.update_one({"id": booking_id}, {"$set": {"status": status}})
 
-    updated = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
-    return updated
-
+    return await db.bookings.find_one({"id": booking_id}, {"_id": 0})
 
 @api_router.delete("/bookings/{booking_id}")
 async def delete_booking(booking_id: str, current_user: dict = Depends(get_current_user)):
     booking = await db.bookings.find_one({"id": booking_id})
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
-
     if booking["user_id"] != current_user["id"] and current_user["role"] != UserRole.admin.value:
         raise HTTPException(status_code=403, detail="Not authorized to delete this booking")
 
     await db.bookings.delete_one({"id": booking_id})
     return {"message": "Booking deleted successfully"}
 
-
 # ---------------- PAYMENT ROUTES ----------------
 
 @api_router.get("/payments", response_model=List[Payment])
 async def list_payments(current_user: dict = Depends(get_current_user)):
     if current_user["role"] == UserRole.admin.value:
-        docs = await db.payments.find({}, {"_id": 0}).to_list(1000)
-        return docs
+        return await db.payments.find({}, {"_id": 0}).to_list(1000)
 
     bookings = await db.bookings.find({"user_id": current_user["id"]}, {"id": 1}).to_list(1000)
     booking_ids = [b["id"] for b in bookings]
-
-    docs = await db.payments.find({"booking_id": {"$in": booking_ids}}, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.payments.find({"booking_id": {"$in": booking_ids}}, {"_id": 0}).to_list(1000)
 
 @api_router.post("/payments", response_model=Payment)
 async def create_payment(payment_data: PaymentCreate, current_user: dict = Depends(get_current_user)):
@@ -683,10 +776,8 @@ async def create_payment(payment_data: PaymentCreate, current_user: dict = Depen
     }
     await db.payments.insert_one(doc)
 
-    # ✅ confirm booking
     await db.bookings.update_one({"id": payment_data.booking_id}, {"$set": {"status": "confirmed"}})
 
-    # ✅ ALSO lock property + cancel other pending bookings (same logic as status confirm)
     prop = await db.properties.find_one({"id": booking["property_id"]})
     if prop:
         await db.properties.update_one({"id": prop["id"]}, {"$set": {"status": "booked"}})
@@ -694,17 +785,13 @@ async def create_payment(payment_data: PaymentCreate, current_user: dict = Depen
             {"property_id": prop["id"], "id": {"$ne": booking["id"]}, "status": "pending"},
             {"$set": {"status": "cancelled"}},
         )
-
     return doc
-
 
 # ---------------- REVIEW ROUTES ----------------
 
 @api_router.get("/properties/{property_id}/reviews", response_model=List[Review])
 async def list_reviews_for_property(property_id: str):
-    docs = await db.reviews.find({"property_id": property_id}, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.reviews.find({"property_id": property_id}, {"_id": 0}).to_list(1000)
 
 @api_router.post("/reviews", response_model=Review)
 async def create_review(review_data: ReviewCreate, current_user: dict = Depends(get_current_user)):
@@ -721,20 +808,15 @@ async def create_review(review_data: ReviewCreate, current_user: dict = Depends(
     await db.reviews.insert_one(doc)
     return doc
 
-
 # ---------------- FAVORITES (WISHLIST) ROUTES ----------------
 
 @api_router.get("/favorites", response_model=List[Favorite])
 async def list_favorites(current_user: dict = Depends(get_current_user)):
-    docs = await db.favorites.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(1000)
-    return docs
-
+    return await db.favorites.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(1000)
 
 @api_router.post("/favorites", response_model=Favorite)
 async def add_favorite(fav_data: FavoriteCreate, current_user: dict = Depends(get_current_user)):
-    existing = await db.favorites.find_one(
-        {"user_id": current_user["id"], "property_id": fav_data.property_id}
-    )
+    existing = await db.favorites.find_one({"user_id": current_user["id"], "property_id": fav_data.property_id})
     if existing:
         raise HTTPException(status_code=400, detail="Property already in favorites")
 
@@ -748,27 +830,75 @@ async def add_favorite(fav_data: FavoriteCreate, current_user: dict = Depends(ge
     await db.favorites.insert_one(doc)
     return doc
 
-
 @api_router.delete("/favorites/{favorite_id}")
 async def remove_favorite(favorite_id: str, current_user: dict = Depends(get_current_user)):
     fav = await db.favorites.find_one({"id": favorite_id})
     if not fav:
         raise HTTPException(status_code=404, detail="Favorite not found")
-
     if fav["user_id"] != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized to remove this favorite")
 
     await db.favorites.delete_one({"id": favorite_id})
     return {"message": "Favorite removed successfully"}
 
+# ---------------- RECOMMENDATIONS ROUTES ----------------
+
+@api_router.get("/recommendations")
+async def get_recommendations(limit: int = 10, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != UserRole.buyer.value:
+        raise HTTPException(status_code=403, detail="Recommendations are for buyers only")
+
+    if BBN_CACHE["infer"] is None:
+        raise HTTPException(status_code=400, detail="Recommender not trained. Ask admin to call /api/admin/recommender/retrain")
+
+    prefs = await _build_user_prefs(current_user["id"])
+
+    favs = await db.favorites.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(5000)
+    fav_prop_ids = set([f["property_id"] for f in favs])
+
+    candidates = await db.properties.find({"status": "available"}, {"_id": 0}).to_list(5000)
+
+    random.seed(7)
+    if len(candidates) > 300:
+        candidates = random.sample(candidates, 300)
+
+    infer = BBN_CACHE["infer"]
+    scored = []
+
+    for p in candidates:
+        if p["id"] in fav_prop_ids:
+            continue
+
+        evidence = {
+            "pref_city": prefs["pref_city"],
+            "pref_type": prefs["pref_type"],
+            "pref_price_bucket": prefs["pref_price_bucket"],
+            "prop_city": str(p.get("city_id", "unknown")),
+            "prop_type": str(p.get("property_type_id", "unknown")),
+            "price_bucket": _bucket_price(float(p.get("price", 0))),
+            "beds_bucket": _bucket_beds(int(p.get("bedrooms", 0))),
+        }
+
+        q = infer.query(variables=[BBN_TARGET], evidence=evidence, show_progress=False)
+        score = _prob_one(q)
+        scored.append({"property": p, "score": round(float(score), 4)})
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    top = scored[: max(1, min(limit, 30))]
+
+    return {
+        "trained_at": BBN_CACHE["trained_at"],
+        "rows_used": BBN_CACHE["rows_used"],
+        "user_id": current_user["id"],
+        "prefs": prefs,
+        "recommendations": [{"property_id": x["property"]["id"], "score": x["score"], "property": x["property"]} for x in top],
+    }
 
 # ---------------- ADMIN ROUTES ----------------
 
 @api_router.get("/admin/users", response_model=List[User])
 async def get_all_users(current_user: dict = Depends(get_admin_user)):
-    docs = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
-    return docs
-
+    return await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
 
 @api_router.get("/admin/stats")
 async def get_stats(current_user: dict = Depends(get_admin_user)):
@@ -790,6 +920,22 @@ async def get_stats(current_user: dict = Depends(get_admin_user)):
         "total_favorites": total_favorites,
     }
 
+@api_router.get("/admin/recommender/status")
+async def recommender_status(current_user: dict = Depends(get_admin_user)):
+    return {
+        "trained_at": BBN_CACHE["trained_at"],
+        "rows_used": BBN_CACHE["rows_used"],
+        "trained": BBN_CACHE["infer"] is not None,
+    }
+
+@api_router.post("/admin/recommender/retrain")
+async def retrain_recommender(current_user: dict = Depends(get_admin_user)):
+    result = await _train_bbn_from_db(max_pos_per_user=10, neg_ratio=3)
+    BBN_CACHE["infer"] = result["infer"]
+    BBN_CACHE["model"] = result["model"]
+    BBN_CACHE["trained_at"] = datetime.now(timezone.utc).isoformat()
+    BBN_CACHE["rows_used"] = result["rows"]
+    return {"message": "BBN recommender trained", "trained_at": BBN_CACHE["trained_at"], "rows_used": result["rows"]}
 
 @api_router.post("/admin/seed")
 async def seed_data():
@@ -927,12 +1073,127 @@ async def seed_data():
 
     return {"message": "Database seeded successfully"}
 
+@api_router.post("/admin/seed-reco")
+async def seed_reco_data(current_user: dict = Depends(get_admin_user)):
+    cities = await db.cities.find({}, {"_id": 0}).to_list(1000)
+    types = await db.property_types.find({}, {"_id": 0}).to_list(1000)
+    if not cities or not types:
+        raise HTTPException(status_code=400, detail="Run /api/admin/seed first to create cities/types")
+
+    owner = await db.users.find_one({"role": UserRole.owner.value}, {"_id": 0})
+    if not owner:
+        raise HTTPException(status_code=400, detail="No owner found. Run /api/admin/seed first")
+
+    TARGET_BUYERS = 30
+    existing_buyers = await db.users.count_documents({"role": UserRole.buyer.value})
+    buyers_to_create = max(0, TARGET_BUYERS - existing_buyers)
+
+    for i in range(buyers_to_create):
+        email = f"buyer{i+1}@mail.com"
+        if await db.users.find_one({"email": email}):
+            continue
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "password": hash_password("buyer123"),
+            "name": f"Buyer {i+1}",
+            "phone": None,
+            "role": UserRole.buyer.value,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    buyers = await db.users.find({"role": UserRole.buyer.value}, {"_id": 0}).to_list(2000)
+
+    TARGET_PROPS = 120
+    prop_count = await db.properties.count_documents({})
+    to_add = max(0, TARGET_PROPS - prop_count)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if to_add > 0:
+        bulk = []
+        for i in range(to_add):
+            city = random.choice(cities)
+            ptype = random.choice(types)
+
+            price = random.choice([75000, 120000, 180000, 250000, 400000, 650000, 900000])
+            bedrooms = random.choice([1, 2, 3, 4, 5])
+            bathrooms = random.choice([1, 2, 3, 4])
+            area = random.choice([800, 1200, 1600, 2200, 3000, 4200])
+
+            bulk.append({
+                "id": str(uuid.uuid4()),
+                "title": f"Seed Property {i+1} - {ptype.get('type_name','Type')}",
+                "description": "Seeded property for BBN recommendation dataset",
+                "price": float(price),
+                "city_id": city["id"],
+                "property_type_id": ptype["id"],
+                "location": f"{city.get('city_name','')}",
+                "address": f"Street {random.randint(1,999)}, {city.get('city_name','')}",
+                "bedrooms": int(bedrooms),
+                "bathrooms": int(bathrooms),
+                "area": float(area),
+                "status": "available",
+                "image_url": "https://images.unsplash.com/photo-1568605114967-8130f3a36994?w=800",
+                "amenities": random.sample(
+                    ["Pool", "Gym", "Parking", "Garden", "Garage", "Fireplace", "Rooftop", "Security"],
+                    k=random.randint(2, 4)
+                ),
+                "owner_id": owner["id"],
+                "created_at": now_iso,
+            })
+
+        await db.properties.insert_many(bulk)
+
+    properties = await db.properties.find({}, {"_id": 0}).to_list(5000)
+
+    created_favs = 0
+    created_bookings = 0
+
+    for b in buyers:
+        fav_targets = random.sample(properties, k=min(len(properties), random.randint(8, 15)))
+        for p in fav_targets:
+            exists = await db.favorites.find_one({"user_id": b["id"], "property_id": p["id"]})
+            if exists:
+                continue
+            await db.favorites.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": b["id"],
+                "property_id": p["id"],
+                "created_at": now_iso,
+            })
+            created_favs += 1
+
+        book_targets = random.sample(properties, k=min(len(properties), random.randint(1, 3)))
+        for p in book_targets:
+            await db.bookings.insert_one({
+                "id": str(uuid.uuid4()),
+                "property_id": p["id"],
+                "user_id": b["id"],
+                "user_name": b.get("name", ""),
+                "user_email": b.get("email", ""),
+                "check_in": now_iso,
+                "check_out": None,
+                "guests": random.randint(1, 6),
+                "message": None,
+                "status": "pending",
+                "total_amount": float(p.get("price", 0)) * 0.01,
+                "created_at": now_iso,
+            })
+            created_bookings += 1
+
+    return {
+        "message": "seed-reco completed",
+        "buyers": len(buyers),
+        "properties": len(properties),
+        "favorites_created": created_favs,
+        "bookings_created": created_bookings,
+    }
+
+# ---------------- UPLOADS ----------------
 
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
 
 @api_router.post("/upload")
 async def upload_image(request: Request, file: UploadFile = File(...)):
@@ -940,28 +1201,27 @@ async def upload_image(request: Request, file: UploadFile = File(...)):
         file_ext = file.filename.split(".")[-1]
         file_name = f"{uuid.uuid4()}.{file_ext}"
         file_path = UPLOAD_DIR / file_name
-
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
         base_url = str(request.base_url).rstrip("/")
         image_url = f"{base_url}/uploads/{file_name}"
-
         return {"url": image_url}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed:{e}")
 
-
 # ---------------- REGISTER ROUTER ----------------
+
 app.include_router(api_router)
 
 # ---------------- SHUTDOWN DB ----------------
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
 
 # ---------------- LOGGING ----------------
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
