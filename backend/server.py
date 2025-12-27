@@ -293,6 +293,26 @@ def normalize_status(v: Optional[str]) -> str:
     return (v or "").strip().lower()
 
 
+# ---------------- BBN PERSISTENCE HELPERS ----------------
+
+async def save_bbn_status():
+    await db.system.update_one(
+        {"key": "bbn_recommender"},
+        {"$set": {
+            "trained_at": BBN_CACHE["trained_at"],
+            "rows_used": BBN_CACHE["rows_used"]
+        }},
+        upsert=True
+    )
+
+
+async def load_bbn_status():
+    status = await db.system.find_one({"key": "bbn_recommender"})
+    if status:
+        BBN_CACHE["trained_at"] = status.get("trained_at")
+        BBN_CACHE["rows_used"] = status.get("rows_used", 0)
+
+
 # ---------------- BBN RECOMMENDER (DWDM Integration) ----------------
 
 BBN_FEATURES = [
@@ -931,11 +951,19 @@ async def recommender_status(current_user: dict = Depends(get_admin_user)):
 @api_router.post("/admin/recommender/retrain")
 async def retrain_recommender(current_user: dict = Depends(get_admin_user)):
     result = await _train_bbn_from_db(max_pos_per_user=10, neg_ratio=3)
+
     BBN_CACHE["infer"] = result["infer"]
     BBN_CACHE["model"] = result["model"]
     BBN_CACHE["trained_at"] = datetime.now(timezone.utc).isoformat()
     BBN_CACHE["rows_used"] = result["rows"]
-    return {"message": "BBN recommender trained", "trained_at": BBN_CACHE["trained_at"], "rows_used": result["rows"]}
+
+    await save_bbn_status()
+
+    return {
+        "message": "BBN recommender trained",
+        "trained_at": BBN_CACHE["trained_at"],
+        "rows_used": BBN_CACHE["rows_used"],
+    }
 
 @api_router.post("/admin/seed")
 async def seed_data():
@@ -1227,3 +1255,19 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def auto_train_recommender():
+    try:
+        result = await _train_bbn_from_db(max_pos_per_user=10, neg_ratio=3)
+
+        BBN_CACHE["infer"] = result["infer"]
+        BBN_CACHE["model"] = result["model"]
+        BBN_CACHE["trained_at"] = datetime.now(timezone.utc).isoformat()
+        BBN_CACHE["rows_used"] = result["rows"]
+
+        logger.info("✅ Recommender auto-trained on startup")
+
+    except Exception as e:
+        logger.error(f"❌ Recommender auto-training failed: {e}")
